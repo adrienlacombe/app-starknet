@@ -354,7 +354,11 @@ pub fn add_message_field(data: &[u8], p2: u8, msg: &mut Snip12Message) {
             msg.num_message_fields_received += 1;
         }
         0x01 => {
-            // Continuation (u256 high felt)
+            // Continuation (u256 high felt) — only valid after a U256 low felt
+            if msg.pending_u256_low.is_none() {
+                return;
+            }
+
             let value = FieldElement::from(&data[..32]);
 
             // Hash the high felt
