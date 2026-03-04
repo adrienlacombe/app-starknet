@@ -1,4 +1,5 @@
 use crate::crypto;
+use crate::snip12;
 use crate::types::FieldElement;
 
 extern crate alloc;
@@ -88,6 +89,7 @@ pub enum Transaction {
     InvokeV3(InvokeTransactionV3),
     DeployAccountV1(DeployAccountTransactionV1),
     DeployAccountV3(DeployAccountTransactionV3),
+    Snip12(snip12::Snip12Message),
 }
 
 impl Transaction {
@@ -97,6 +99,7 @@ impl Transaction {
             Transaction::InvokeV3(tx) => tx.nb_rcv_calls,
             Transaction::DeployAccountV1(_tx) => 1usize,
             Transaction::DeployAccountV3(_tx) => 1usize,
+            Transaction::Snip12(_) => 0usize,
             Transaction::None => 0usize,
         }
     }
@@ -107,6 +110,7 @@ impl Transaction {
             Transaction::InvokeV3(tx) => tx.nb_calls,
             Transaction::DeployAccountV1(_tx) => 1usize,
             Transaction::DeployAccountV3(_tx) => 1usize,
+            Transaction::Snip12(_) => 0usize,
             Transaction::None => 0usize,
         }
     }
@@ -121,6 +125,7 @@ pub enum RequestType {
     SignTxV1,
     SignDeployAccount,
     SignDeployAccountV1,
+    SignTypedData,
 }
 
 #[derive(Default, Debug)]

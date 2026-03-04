@@ -12,6 +12,7 @@ use ledger_device_sdk::include_gif;
 use ledger_device_sdk::io::Comm;
 
 use crate::context::{Ctx, Transaction};
+use crate::snip12::Snip12Message;
 
 use crate::settings::Settings;
 use ledger_device_sdk::nbgl::{
@@ -28,6 +29,7 @@ pub fn show_tx(ctx: &mut Ctx) -> Option<bool> {
         Transaction::DeployAccountV1(tx) => show_tx_deploy_account_v1(tx),
         Transaction::InvokeV3(tx) => show_tx_invoke_v3(tx),
         Transaction::InvokeV1(tx) => show_tx_invoke_v1(tx),
+        Transaction::Snip12(msg) => show_typed_data(msg),
     }
 }
 
@@ -252,6 +254,50 @@ fn show_tx_deploy_account_v1(tx: &DeployAccountTransactionV1) -> Option<bool> {
         .glyph(&APP_ICON);
 
     Some(review.show(&my_fields))
+}
+
+fn show_typed_data(msg: &Snip12Message) -> Option<bool> {
+    // Fall back to blind signing if no fields or too many fields for clear signing
+    if msg.num_display_fields == 0
+        || msg.num_message_fields as usize > crate::snip12::MAX_DISPLAY_FIELDS
+    {
+        return None;
+    }
+
+    // Build Field array from DisplayFields
+    // We need to hold the string references alive, so collect into a fixed array
+    let mut fields_storage: [Field; 8] = [
+        Field { name: "", value: "" },
+        Field { name: "", value: "" },
+        Field { name: "", value: "" },
+        Field { name: "", value: "" },
+        Field { name: "", value: "" },
+        Field { name: "", value: "" },
+        Field { name: "", value: "" },
+        Field { name: "", value: "" },
+    ];
+
+    let n = msg.num_display_fields.min(8);
+    for i in 0..n {
+        fields_storage[i] = Field {
+            name: msg.display_fields[i].name_str(),
+            value: msg.display_fields[i].value_str(),
+        };
+    }
+
+    #[cfg(any(target_os = "nanosplus", target_os = "nanox"))]
+    const APP_ICON: NbglGlyph = NbglGlyph::from_include(include_gif!("starknet_small.gif", NBGL));
+    #[cfg(any(target_os = "stax", target_os = "flex"))]
+    const APP_ICON: NbglGlyph = NbglGlyph::from_include(include_gif!("starknet_64x64.gif", NBGL));
+    #[cfg(target_os = "apex_p")]
+    const APP_ICON: NbglGlyph = NbglGlyph::from_include(include_gif!("starknet_48x48.png", NBGL));
+
+    let review = NbglReview::new()
+        .tx_type(TransactionType::Message)
+        .titles("Review message", "", "Sign Message ?")
+        .glyph(&APP_ICON);
+
+    Some(review.show(&fields_storage[..n]))
 }
 
 pub fn show_hash(ctx: &mut Ctx, is_tx_hash: bool) -> bool {

@@ -1,6 +1,7 @@
 use ledger_device_sdk::ecc::{ECPublicKey, SeedDerive, Stark256};
 use ledger_device_sdk::io::{Reply, SyscallError};
 
+pub mod keccak;
 pub mod pedersen;
 pub mod poseidon;
 

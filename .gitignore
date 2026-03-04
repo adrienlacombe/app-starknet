@@ -1,3 +1,4 @@
+target/
 starknet/target
 tools/*/target
 *.pyc

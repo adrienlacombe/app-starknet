@@ -78,7 +78,7 @@ pub fn tx_complete(tx: &mut Transaction) -> Option<FieldElement> {
             }
             None
         }
-        Transaction::None => None,
+        Transaction::Snip12(_) | Transaction::None => None,
     }
 }
 
@@ -88,7 +88,7 @@ pub fn set_tx_fields(data: &[u8], tx: &mut Transaction) {
         Transaction::InvokeV1(tx) => set_invoke_fields_v1(data, tx),
         Transaction::DeployAccountV3(tx) => set_deploy_account_fields_v3(data, tx),
         Transaction::DeployAccountV1(tx) => set_deploy_account_fields_v1(data, tx),
-        Transaction::None => panic!("Invalid transaction type"),
+        Transaction::Snip12(_) | Transaction::None => panic!("Invalid transaction type"),
     }
 }
 
@@ -132,7 +132,10 @@ pub fn set_tx_fees(data: &[u8], tx: &mut Transaction) {
             let fee_hash = fee_hasher.finalize();
             tx.hasher.update(fee_hash);
         }
-        Transaction::InvokeV1(_) | Transaction::DeployAccountV1(_) | Transaction::None => {
+        Transaction::InvokeV1(_)
+        | Transaction::DeployAccountV1(_)
+        | Transaction::Snip12(_)
+        | Transaction::None => {
             panic!("Invalid transaction type")
         }
     }
@@ -285,7 +288,7 @@ pub fn set_calldata_nb(tx: &mut Transaction, nb: FieldElement) {
         Transaction::DeployAccountV1(tx) => {
             tx.constructor_calldata = Vec::with_capacity(nb.into());
         }
-        Transaction::None => panic!("Invalid transaction type"),
+        Transaction::Snip12(_) | Transaction::None => panic!("Invalid transaction type"),
     }
 }
 
@@ -330,7 +333,7 @@ pub fn set_calldata(
             tx.hasher.update(hasher.finalize());
             Ok(())
         }
-        Transaction::None => panic!("Invalid transaction type"),
+        Transaction::Snip12(_) | Transaction::None => panic!("Invalid transaction type"),
     }
 }
 

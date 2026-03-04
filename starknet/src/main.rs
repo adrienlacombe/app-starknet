@@ -6,6 +6,7 @@ mod crypto;
 mod display;
 mod erc20;
 mod settings;
+mod snip12;
 mod transaction;
 mod types;
 
@@ -64,6 +65,7 @@ enum Ins {
     SignTxV1,
     SignDeployAccount,
     SignDeployAccountV1,
+    SignTypedData,
     #[cfg(feature = "poseidon")]
     Poseidon,
 }
@@ -86,6 +88,7 @@ impl TryFrom<io::ApduHeader> for Ins {
             (6, _, _) => Ok(Ins::SignDeployAccountV1),
             #[cfg(feature = "poseidon")]
             (7, _, _) => Ok(Ins::Poseidon),
+            (8, _, _) => Ok(Ins::SignTypedData),
             (_, _, _) => Err(io::StatusWords::BadIns),
         }
     }
@@ -564,6 +567,118 @@ fn handle_apdu(comm: &mut io::Comm, ins: &Ins, ctx: &mut Ctx) {
                             }
                         }
                     }
+                }
+            }
+            _ => {
+                send_data(comm, Err(io::StatusWords::BadP1P2.into()));
+            }
+        },
+        Ins::SignTypedData => match p1 {
+            0 => {
+                ctx.reset();
+                ctx.req_type = RequestType::SignTypedData;
+                ctx.tx = Transaction::Snip12(snip12::Snip12Message::default());
+                match crypto::set_derivation_path(&mut data, ctx) {
+                    Ok(()) => {
+                        send_data(comm, Ok(None));
+                    }
+                    Err(e) => {
+                        send_data(comm, Err(e.into()));
+                    }
+                }
+            }
+            1 => {
+                display::show_step("Parsing message...", ctx);
+                if let Transaction::Snip12(ref mut msg) = ctx.tx {
+                    snip12::set_metadata(data, msg);
+                }
+                send_data(comm, Ok(None));
+            }
+            2 => {
+                display::show_step("Parsing message...", ctx);
+                if let Transaction::Snip12(ref mut msg) = ctx.tx {
+                    snip12::handle_type_def(data, p2, msg);
+                }
+                send_data(comm, Ok(None));
+            }
+            3 => {
+                display::show_step("Parsing message...", ctx);
+                if let Transaction::Snip12(ref mut msg) = ctx.tx {
+                    snip12::add_domain_field(data, msg);
+                }
+                send_data(comm, Ok(None));
+            }
+            4 => {
+                display::show_step("Parsing message...", ctx);
+                // Delay lock to prevent the device to pinlock
+                uxapp::UxEvent::DelayLock.request();
+                if let Transaction::Snip12(ref mut msg) = ctx.tx {
+                    snip12::add_message_field(data, p2, msg);
+                }
+
+                // Check if all data has been received
+                let complete = if let Transaction::Snip12(ref msg) = ctx.tx {
+                    snip12::is_complete(msg)
+                } else {
+                    false
+                };
+
+                if complete {
+                    // Compute final hash
+                    if let Transaction::Snip12(ref msg) = ctx.tx {
+                        ctx.hash = snip12::compute_final_hash(msg);
+                    }
+
+                    // Try clear signing display
+                    match display::show_tx(ctx) {
+                        Some(approved) => match approved {
+                            true => {
+                                rdata.extend_from_slice(ctx.hash.value.as_ref());
+                                crypto::sign_hash(ctx).unwrap();
+                                rdata.extend_from_slice([SIG_LENGTH].as_slice());
+                                rdata.extend_from_slice(ctx.signature.r.as_ref());
+                                rdata.extend_from_slice(ctx.signature.s.as_ref());
+                                rdata.extend_from_slice([ctx.signature.v].as_slice());
+                                display::show_status(true, false, ctx);
+                                send_data(comm, Ok(Some(rdata)));
+                            }
+                            false => {
+                                display::show_status(false, false, ctx);
+                                send_data(comm, Err(io::StatusWords::UserCancelled.into()));
+                            }
+                        },
+                        None => {
+                            // Fallback to blind signing
+                            let settings: Settings = Default::default();
+                            if settings.get_element(0) == 0 {
+                                display::blind_signing_enable_ui(ctx);
+                                send_data(comm, Err(io::StatusWords::UserCancelled.into()));
+                            } else {
+                                uxapp::UxEvent::DelayLock.request();
+                                match display::show_hash(ctx, false) {
+                                    true => {
+                                        rdata.extend_from_slice(ctx.hash.value.as_ref());
+                                        crypto::sign_hash(ctx).unwrap();
+                                        rdata.extend_from_slice([SIG_LENGTH].as_slice());
+                                        rdata.extend_from_slice(ctx.signature.r.as_ref());
+                                        rdata.extend_from_slice(ctx.signature.s.as_ref());
+                                        rdata.extend_from_slice([ctx.signature.v].as_slice());
+                                        display::show_status(true, false, ctx);
+                                        send_data(comm, Ok(Some(rdata)));
+                                    }
+                                    false => {
+                                        display::show_status(false, false, ctx);
+                                        send_data(
+                                            comm,
+                                            Err(io::StatusWords::UserCancelled.into()),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    send_data(comm, Ok(None));
                 }
             }
             _ => {
