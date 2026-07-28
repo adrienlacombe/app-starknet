@@ -6,7 +6,7 @@ from ragger.error import ExceptionRAPDU
 from ragger.navigator import NavInsID
 
 from application_client.response_unpacker import Errors
-from utils import read_lines_from_file
+from utils import ROOT_SCREENSHOT_PATH, read_lines_from_file
 
 
 CLA = 0x5A
@@ -96,37 +96,42 @@ def test_account_leaf_v1_rejection_sampling_snip_vector():
     )
 
 
-def exchange_and_approve(apdu, firmware, backend, navigator):
+def exchange_and_approve(apdu, firmware, backend, navigator, test_name):
     with backend.exchange_async_raw(apdu):
         if firmware.device.startswith("nano"):
-            navigator.navigate_until_text(
+            navigator.navigate_until_text_and_compare(
                 NavInsID.RIGHT_CLICK,
                 [NavInsID.BOTH_CLICK],
                 "Derive private",
+                ROOT_SCREENSHOT_PATH,
+                test_name,
             )
         else:
-            navigator.navigate_until_text(
+            navigator.navigate_until_text_and_compare(
                 NavInsID.SWIPE_CENTER_TO_LEFT,
                 [
                     NavInsID.USE_CASE_REVIEW_CONFIRM,
                     NavInsID.USE_CASE_STATUS_DISMISS,
                 ],
                 "Derive private",
+                ROOT_SCREENSHOT_PATH,
+                test_name,
             )
 
     return backend.last_async_response.data
 
 
-def test_derive_strk20_viewing_key(firmware, backend, navigator):
+def test_derive_strk20_viewing_key(firmware, backend, navigator, test_name):
     apdu = bytes.fromhex(read_lines_from_file("samples/apdu/strk20_viewing_key.dat")[0])
 
     assert (
-        exchange_and_approve(apdu, firmware, backend, navigator) == SPECULOS_VIEWING_KEY
+        exchange_and_approve(apdu, firmware, backend, navigator, test_name)
+        == SPECULOS_VIEWING_KEY
     )
 
 
 def test_derive_strk20_viewing_key_retries_rejected_digest(
-    firmware, backend, navigator
+    firmware, backend, navigator, test_name
 ):
     apdu = bytearray.fromhex(
         read_lines_from_file("samples/apdu/strk20_viewing_key.dat")[0]
@@ -135,24 +140,28 @@ def test_derive_strk20_viewing_key_retries_rejected_digest(
     apdu[pool_offset : pool_offset + 32] = (0x16).to_bytes(32, "big")
 
     assert (
-        exchange_and_approve(bytes(apdu), firmware, backend, navigator)
+        exchange_and_approve(bytes(apdu), firmware, backend, navigator, test_name)
         == SPECULOS_REJECTION_VIEWING_KEY
     )
 
 
-def test_derive_strk20_viewing_key_can_be_refused(firmware, backend, navigator):
+def test_derive_strk20_viewing_key_can_be_refused(
+    firmware, backend, navigator, test_name
+):
     apdu = bytes.fromhex(read_lines_from_file("samples/apdu/strk20_viewing_key.dat")[0])
 
     with pytest.raises(ExceptionRAPDU) as error:
         with backend.exchange_async_raw(apdu):
             if firmware.device.startswith("nano"):
-                navigator.navigate_until_text(
+                navigator.navigate_until_text_and_compare(
                     NavInsID.RIGHT_CLICK,
                     [NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK],
                     "Derive private",
+                    ROOT_SCREENSHOT_PATH,
+                    test_name,
                 )
             else:
-                navigator.navigate_until_text(
+                navigator.navigate_until_text_and_compare(
                     NavInsID.SWIPE_CENTER_TO_LEFT,
                     [
                         NavInsID.USE_CASE_REVIEW_REJECT,
@@ -160,6 +169,8 @@ def test_derive_strk20_viewing_key_can_be_refused(firmware, backend, navigator):
                         NavInsID.USE_CASE_STATUS_DISMISS,
                     ],
                     "Derive private",
+                    ROOT_SCREENSHOT_PATH,
+                    test_name,
                 )
 
     assert error.value.status == Errors.SW_DENY
