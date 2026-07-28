@@ -6,6 +6,7 @@ mod crypto;
 mod display;
 mod erc20;
 mod settings;
+mod strk20;
 mod transaction;
 mod types;
 
@@ -66,6 +67,7 @@ enum Ins {
     SignDeployAccountV1,
     #[cfg(feature = "poseidon")]
     Poseidon,
+    DeriveStrk20ViewingKey,
 }
 
 impl TryFrom<io::ApduHeader> for Ins {
@@ -86,6 +88,8 @@ impl TryFrom<io::ApduHeader> for Ins {
             (6, _, _) => Ok(Ins::SignDeployAccountV1),
             #[cfg(feature = "poseidon")]
             (7, _, _) => Ok(Ins::Poseidon),
+            (8, 0, 0) => Ok(Ins::DeriveStrk20ViewingKey),
+            (8, _, _) => Err(io::StatusWords::BadP1P2),
             (_, _, _) => Err(io::StatusWords::BadIns),
         }
     }
@@ -570,6 +574,47 @@ fn handle_apdu(comm: &mut io::Comm, ins: &Ins, ctx: &mut Ctx) {
                 send_data(comm, Err(io::StatusWords::BadP1P2.into()));
             }
         },
+        Ins::DeriveStrk20ViewingKey => {
+            ctx.reset();
+            ctx.req_type = RequestType::DeriveStrk20ViewingKey;
+
+            if data.len() != strk20::COMMAND_PAYLOAD_LENGTH {
+                send_data(comm, Err(io::StatusWords::BadLen.into()));
+                return;
+            }
+
+            let mut path_data = &data[..24];
+            if let Err(error) = crypto::set_derivation_path(&mut path_data, ctx) {
+                send_data(comm, Err(error.into()));
+                return;
+            }
+
+            let context = match strk20::DerivationContext::parse(&data[24..]) {
+                Ok(context) => context,
+                Err(error) => {
+                    send_data(comm, Err(error.into()));
+                    return;
+                }
+            };
+
+            if !display::strk20_viewing_key_ui(&context, ctx) {
+                display::show_strk20_status(false, ctx);
+                send_data(comm, Err(io::StatusWords::UserCancelled.into()));
+                return;
+            }
+
+            match strk20::derive_viewing_key(&ctx.bip32_path, &context) {
+                Ok(viewing_key) => {
+                    display::show_strk20_status(true, ctx);
+                    comm.append(viewing_key.as_ref());
+                    send_data(comm, Ok(None));
+                }
+                Err(error) => {
+                    display::show_strk20_status(false, ctx);
+                    send_data(comm, Err(error.into()));
+                }
+            }
+        }
         #[cfg(feature = "poseidon")]
         Ins::Poseidon => {
             let data = comm.get_data()?;

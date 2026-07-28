@@ -121,6 +121,7 @@ pub enum RequestType {
     SignTxV1,
     SignDeployAccount,
     SignDeployAccountV1,
+    DeriveStrk20ViewingKey,
 }
 
 #[derive(Default, Debug)]

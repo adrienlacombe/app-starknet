@@ -35,8 +35,19 @@ The general structure of a request and response is as followed:
 | 0x6e01      | Bad Ins                 |
 | 0x6e02      | Bad P1/P2               |
 | 0x6e03      | Bad Len                 |
-| 0x6e04      | User Cancelled          |
+| 0x6985      | User Cancelled          |
 | 0xe000      | Panic                   |
+| 0xff00      | Invalid EIP-2645 path prefix |
+| 0xff01      | Invalid EIP-2645 path length |
+| 0xff03      | Invalid STRK20 context length |
+| 0xff04      | Unsupported STRK20 context version |
+| 0xff05      | Non-canonical STRK20 context felt |
+| 0xff06      | Unsupported STRK20 key index |
+| 0xff07      | Account leaf derivation failed |
+| 0xff08      | Invalid account leaf scalar |
+| 0xff09      | HMAC-SHA256 failed |
+| 0xff0a      | Scalar arithmetic failed |
+| 0xff0b      | STRK20 derivation exhausted its counter |
 
 
 ## Commands definitions
@@ -91,6 +102,45 @@ This command returns the public key corresponding to the private key found at th
 | PK_LEN     | byte (1)  | Bytes in PKEY     | 64                       |
 | PKEY       | byte (64) | Public key bytes  | 32 (x) + 32 (y)          |
 | SW1-SW2    | byte (2)  | Return code       | see list of return codes |
+
+### Derive STRK20 Viewing Key
+
+This command implements the `account-leaf-v1` profile from the STRK20 Viewing
+Key Derivation SNIP. It derives the normal Stark-curve account leaf selected by
+the EIP-2645 path, performs the purpose-bound HMAC-SHA256 derivation inside the
+device, requests user consent, and returns only the 32-byte canonical
+Stark-curve viewing scalar.
+
+The app currently supports Stark-curve account leaves only, matching its normal
+signer. `P1` and `P2` are fixed so callers cannot select a key scheme, domain
+separator, or KDF counter.
+
+#### Command
+
+| Field           | Type       | Content                          | Expected |
+|-----------------|------------|----------------------------------|----------|
+| CLA             | byte (1)   | Application Identifier           | 0x5A     |
+| INS             | byte (1)   | Instruction ID                   | 0x08     |
+| P1              | byte (1)   | Fixed                            | 0x00     |
+| P2              | byte (1)   | Fixed                            | 0x00     |
+| L               | byte (1)   | Bytes in payload                 | 0x8C     |
+| Path[0..5]      | bytes (24) | EIP-2645 account derivation path | Path[0] = 0x80000A55 |
+| Version         | bytes (4)  | Unsigned big-endian version      | 0x00000001 |
+| Chain ID        | bytes (32) | Canonical felt252                |          |
+| Account address | bytes (32) | Canonical felt252                |          |
+| Pool address    | bytes (32) | Canonical felt252                |          |
+| Key index       | bytes (16) | Unsigned big-endian u128         | all zero |
+
+The derivation context after the path is exactly 116 bytes. Fixed-width fields
+must retain leading zero bytes. The device displays the chain, account, pool,
+and a warning that approval grants access to private STRK20 history.
+
+#### Response
+
+| Field       | Type       | Content                              | Note |
+|-------------|------------|--------------------------------------|------|
+| Viewing key | bytes (32) | Canonical Stark-curve private scalar | `1 <= k < floor(n / 2)` |
+| SW1-SW2     | bytes (2)  | Return code                          | see list of return codes |
 
 ### Sign Hash
 
