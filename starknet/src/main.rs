@@ -597,7 +597,18 @@ fn handle_apdu(comm: &mut io::Comm, ins: &Ins, ctx: &mut Ctx) {
                 }
             };
 
-            if !display::strk20_viewing_key_ui(&context, ctx) {
+            // Derived here so the consent screen can show the signer this
+            // command will actually use, instead of only the host-supplied
+            // account address the device has no way to verify.
+            let signer_key = match crypto::get_pubkey(ctx) {
+                Ok(key) => key,
+                Err(error) => {
+                    send_data(comm, Err(Reply::from(error)));
+                    return;
+                }
+            };
+
+            if !display::strk20_viewing_key_ui(&context, signer_key.as_ref(), ctx) {
                 display::show_strk20_status(false, ctx);
                 send_data(comm, Err(io::StatusWords::UserCancelled.into()));
                 return;

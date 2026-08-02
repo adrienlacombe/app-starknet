@@ -32,6 +32,60 @@ SPECULOS_REJECTION_VIEWING_KEY = bytes.fromhex(
     "0005cae77026d7ca9a333af7bcbfc65636a882840a03a3fc3a63699b7f372cab"
 )
 
+# Stark curve, used to check the public-key matching required by SNIP-44
+# "Implementation". Recovery accepts a derived key only when x(k * G) equals
+# the public key registered on-chain, so the scalar alone is not enough.
+STARK_FIELD_PRIME = 2**251 + 17 * 2**192 + 1
+STARK_CURVE_A = 1
+STARK_CURVE_B = 0x6F21413EFBE40DE150E596D72F7A8C5609AD26C15C915C1F4CDFCB99CEE9E89
+STARK_GENERATOR = (
+    0x1EF15C18599971B7BECED415A40F0C7DEACFD9B0D1819E03D723D8BC943CFCA,
+    0x5668060AA49730B7BE4801DF46EC62DE53ECD11ABE43A32873000C36E8DC1F,
+)
+STARK_LOWER_HALF_BOUNDARY = STARK_CURVE_ORDER // 2
+
+
+def _point_add(first, second):
+    if first is None:
+        return second
+    if second is None:
+        return first
+    x1, y1 = first
+    x2, y2 = second
+    if x1 == x2 and (y1 + y2) % STARK_FIELD_PRIME == 0:
+        return None
+    if first == second:
+        slope = (3 * x1 * x1 + STARK_CURVE_A) * pow(2 * y1, -1, STARK_FIELD_PRIME)
+    else:
+        slope = (y2 - y1) * pow(x2 - x1, -1, STARK_FIELD_PRIME)
+    slope %= STARK_FIELD_PRIME
+    x3 = (slope * slope - x1 - x2) % STARK_FIELD_PRIME
+    return (x3, (slope * (x1 - x3) - y1) % STARK_FIELD_PRIME)
+
+
+def stark_public_key_x(scalar: int) -> int:
+    assert 1 <= scalar < STARK_CURVE_ORDER
+    result, addend = None, STARK_GENERATOR
+    while scalar:
+        if scalar & 1:
+            result = _point_add(result, addend)
+        addend = _point_add(addend, addend)
+        scalar >>= 1
+    assert result is not None
+    return result[0]
+
+
+def assert_canonical_viewing_key(viewing_key: bytes) -> int:
+    """A conforming device returns a canonical scalar: SNIP-44 requires
+    1 <= k < floor(n / 2), strictly, and the point must be on the curve."""
+    assert len(viewing_key) == 32
+    scalar = int.from_bytes(viewing_key, "big")
+    assert 1 <= scalar < STARK_LOWER_HALF_BOUNDARY
+    x = stark_public_key_x(scalar)
+    y_squared = (x**3 + STARK_CURVE_A * x + STARK_CURVE_B) % STARK_FIELD_PRIME
+    assert pow(y_squared, (STARK_FIELD_PRIME - 1) // 2, STARK_FIELD_PRIME) == 1
+    return x
+
 
 def derive_reference(account_leaf: bytes, context: bytes):
     assert len(account_leaf) == 32
@@ -70,6 +124,10 @@ def test_account_leaf_v1_primary_snip_vector():
         viewing_key.hex()
         == "012eb8ad5ccd790c7f680a4364db37673265f91147173130bed719a511a36bcb"
     )
+    # SNIP-44 "Primary vector" public_key_x.
+    assert stark_public_key_x(int.from_bytes(viewing_key, "big")) == int(
+        "0435ada564d3bb1c5ac7caac8aa5fdc7dfa5de1aea83ff660099ea619a08c7a5", 16
+    )
 
 
 def test_account_leaf_v1_rejection_sampling_snip_vector():
@@ -93,6 +151,10 @@ def test_account_leaf_v1_rejection_sampling_snip_vector():
     assert (
         viewing_key.hex()
         == "01ad67c997ffb3359196403b585305625f57635ce102dff935f1066031289bf0"
+    )
+    # SNIP-44 "Rejection-sampling vector" public_key_x.
+    assert stark_public_key_x(int.from_bytes(viewing_key, "big")) == int(
+        "04366caa68f40c9467a805b2646bcca3ac60c320c165564f69bc2de4b668e7ed", 16
     )
 
 
@@ -124,10 +186,10 @@ def exchange_and_approve(apdu, firmware, backend, navigator, test_name):
 def test_derive_strk20_viewing_key(firmware, backend, navigator, test_name):
     apdu = bytes.fromhex(read_lines_from_file("samples/apdu/strk20_viewing_key.dat")[0])
 
-    assert (
-        exchange_and_approve(apdu, firmware, backend, navigator, test_name)
-        == SPECULOS_VIEWING_KEY
-    )
+    viewing_key = exchange_and_approve(apdu, firmware, backend, navigator, test_name)
+
+    assert viewing_key == SPECULOS_VIEWING_KEY
+    assert_canonical_viewing_key(viewing_key)
 
 
 def test_derive_strk20_viewing_key_retries_rejected_digest(
@@ -139,10 +201,12 @@ def test_derive_strk20_viewing_key_retries_rejected_digest(
     pool_offset = 5 + 24 + 4 + 32 + 32
     apdu[pool_offset : pool_offset + 32] = (0x16).to_bytes(32, "big")
 
-    assert (
-        exchange_and_approve(bytes(apdu), firmware, backend, navigator, test_name)
-        == SPECULOS_REJECTION_VIEWING_KEY
+    viewing_key = exchange_and_approve(
+        bytes(apdu), firmware, backend, navigator, test_name
     )
+
+    assert viewing_key == SPECULOS_REJECTION_VIEWING_KEY
+    assert_canonical_viewing_key(viewing_key)
 
 
 def test_derive_strk20_viewing_key_can_be_refused(

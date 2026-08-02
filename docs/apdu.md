@@ -132,8 +132,17 @@ separator, or KDF counter.
 | Key index       | bytes (16) | Unsigned big-endian u128         | all zero |
 
 The derivation context after the path is exactly 116 bytes. Fixed-width fields
-must retain leading zero bytes. The device displays the chain, account, pool,
-and a warning that approval grants access to private STRK20 history.
+must retain leading zero bytes.
+
+The device displays a warning that approval grants access to private STRK20
+history, followed by the chain, account, and pool from the context, then the
+derivation path and the Stark public key x-coordinate of the signer that
+command will actually use. Chain, account, and pool are host-supplied: they are
+bound into the KDF, but the device cannot check that the account address
+belongs to this signer. The derivation path and signer key are derived
+on-device, so they are the values a user can rely on to identify the key being
+derived, and the signer key is what a companion wallet should match against the
+account's recorded owner public key before requesting derivation.
 
 #### Response
 

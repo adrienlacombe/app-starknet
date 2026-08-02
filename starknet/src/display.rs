@@ -22,6 +22,7 @@ use ledger_device_sdk::nbgl::{
 };
 
 use alloc::string::{String, ToString};
+use core::fmt::Write;
 
 pub fn show_tx(ctx: &mut Ctx) -> Option<bool> {
     let tx = &mut ctx.tx;
@@ -345,10 +346,21 @@ pub fn pkey_ui(key: &[u8], ctx: &mut Ctx) -> bool {
     }
 }
 
-pub fn strk20_viewing_key_ui(context: &DerivationContext, _ctx: &mut Ctx) -> bool {
+/// `signer_key` is the uncompressed Stark public key (0x04 || x || y) derived
+/// on-device from `ctx.bip32_path`. Chain, account and pool come from the host
+/// and are only bound into the KDF; the device cannot check that the account
+/// address belongs to this signer, so the path and the signer key are shown
+/// alongside them as the values the device can actually vouch for.
+pub fn strk20_viewing_key_ui(
+    context: &DerivationContext,
+    signer_key: &[u8],
+    ctx: &mut Ctx,
+) -> bool {
     let chain = format_chain_id(context.chain_id());
     let account = format_felt(context.account_address());
     let pool = format_felt(context.pool_address());
+    let path = format_path(&ctx.bip32_path);
+    let signer = format_felt(&signer_key[1..33]);
 
     let fields = [
         Field {
@@ -366,6 +378,14 @@ pub fn strk20_viewing_key_ui(context: &DerivationContext, _ctx: &mut Ctx) -> boo
         Field {
             name: "Pool",
             value: pool.as_str(),
+        },
+        Field {
+            name: "Derivation path",
+            value: path.as_str(),
+        },
+        Field {
+            name: "Signer key",
+            value: signer.as_str(),
         },
     ];
 
@@ -411,6 +431,16 @@ fn format_chain_id(chain_id: &[u8]) -> String {
 fn format_felt(value: &[u8]) -> String {
     let mut formatted = String::from("0x");
     formatted.push_str(hex::encode(value).as_str());
+    formatted
+}
+
+fn format_path(path: &[u32; 6]) -> String {
+    let mut formatted = String::from("m");
+    for element in path.iter() {
+        let index = element & 0x7fff_ffff;
+        let hardened = element & 0x8000_0000 != 0;
+        let _ = write!(formatted, "/{}{}", index, if hardened { "'" } else { "" });
+    }
     formatted
 }
 
