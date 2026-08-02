@@ -5,6 +5,7 @@ use crate::{
         InvokeTransactionV3,
     },
     erc20::{ERC20_TOKENS, TRANSFER},
+    strk20::DerivationContext,
     types::FieldElement,
 };
 
@@ -19,6 +20,9 @@ use ledger_device_sdk::nbgl::{
     NbglReview, NbglReviewStatus, NbglStatus, PageIndex, StatusType, TagValueConfirm, TagValueList,
     TransactionType, TuneIndex,
 };
+
+use alloc::string::{String, ToString};
+use core::fmt::Write;
 
 pub fn show_tx(ctx: &mut Ctx) -> Option<bool> {
     let tx = &mut ctx.tx;
@@ -340,6 +344,104 @@ pub fn pkey_ui(key: &[u8], ctx: &mut Ctx) -> bool {
             false
         }
     }
+}
+
+/// `signer_key` is the uncompressed Stark public key (0x04 || x || y) derived
+/// on-device from `ctx.bip32_path`. Chain, account and pool come from the host
+/// and are only bound into the KDF; the device cannot check that the account
+/// address belongs to this signer, so the path and the signer key are shown
+/// alongside them as the values the device can actually vouch for.
+pub fn strk20_viewing_key_ui(
+    context: &DerivationContext,
+    signer_key: &[u8],
+    ctx: &mut Ctx,
+) -> bool {
+    let chain = format_chain_id(context.chain_id());
+    let account = format_felt(context.account_address());
+    let pool = format_felt(context.pool_address());
+    let path = format_path(&ctx.bip32_path);
+    let signer = format_felt(&signer_key[1..33]);
+
+    let fields = [
+        Field {
+            name: "Warning",
+            value: "Grants access to private STRK20 history",
+        },
+        Field {
+            name: "Chain",
+            value: chain.as_str(),
+        },
+        Field {
+            name: "Account",
+            value: account.as_str(),
+        },
+        Field {
+            name: "Pool",
+            value: pool.as_str(),
+        },
+        Field {
+            name: "Derivation path",
+            value: path.as_str(),
+        },
+        Field {
+            name: "Signer key",
+            value: signer.as_str(),
+        },
+    ];
+
+    #[cfg(any(target_os = "nanosplus", target_os = "nanox"))]
+    const APP_ICON: NbglGlyph = NbglGlyph::from_include(include_gif!("starknet_small.gif", NBGL));
+    #[cfg(any(target_os = "stax", target_os = "flex"))]
+    const APP_ICON: NbglGlyph = NbglGlyph::from_include(include_gif!("starknet_64x64.gif", NBGL));
+    #[cfg(target_os = "apex_p")]
+    const APP_ICON: NbglGlyph = NbglGlyph::from_include(include_gif!("starknet_48x48.png", NBGL));
+
+    NbglReview::new()
+        .tx_type(TransactionType::Message)
+        .titles("Review STRK20 access", "", "Derive private viewing key?")
+        .glyph(&APP_ICON)
+        .show(&fields)
+}
+
+pub fn show_strk20_status(success: bool, ctx: &mut Ctx) {
+    NbglStatus::new()
+        .text(if success {
+            "Viewing key derived"
+        } else {
+            "Viewing key not derived"
+        })
+        .show(success);
+    ctx.home.show_and_return();
+}
+
+fn format_chain_id(chain_id: &[u8]) -> String {
+    let significant = match chain_id.iter().position(|byte| *byte != 0) {
+        Some(index) => &chain_id[index..],
+        None => &chain_id[chain_id.len()..],
+    };
+    if !significant.is_empty() && significant.iter().all(|byte| (0x20..=0x7e).contains(byte)) {
+        core::str::from_utf8(significant)
+            .unwrap_or_default()
+            .to_string()
+    } else {
+        format_felt(chain_id)
+    }
+}
+
+fn format_felt(value: &[u8]) -> String {
+    let mut formatted = String::from("0x");
+    formatted.push_str(hex::encode(value).as_str());
+    formatted
+}
+
+fn format_path(path: &[u32; 6]) -> String {
+    let mut formatted = String::from("m");
+    for element in path.iter() {
+        let index = element & 0x7fff_ffff;
+        let hardened = element & 0x8000_0000 != 0;
+        let _ = write!(formatted, "/{}{}", index, if hardened { "'" } else { "" });
+    }
+    formatted
 }
 
 pub fn main_ui_nbgl(_comm: &mut Comm) -> NbglHomeAndSettings {
