@@ -132,7 +132,7 @@ fn send_mldsa_transfer_chunk(comm: &mut io::Comm, ctx: &Ctx, session_id: u32, of
         send_data(comm, Err(SW_BAD_STATE));
         return;
     }
-    if offset % MLDSA_TRANSFER_CHUNK_LEN != 0 || offset >= transfer.len {
+    if !offset.is_multiple_of(MLDSA_TRANSFER_CHUNK_LEN) || offset >= transfer.len {
         send_data(comm, Err(io::StatusWords::BadP1P2.into()));
         return;
     }
