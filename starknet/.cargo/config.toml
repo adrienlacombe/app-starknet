@@ -7,3 +7,8 @@ target = "flex"
 [unstable]
 build-std = ["core", "alloc"]
 build-std-features = ["compiler-builtins-mem"]
+
+[env]
+# ML-DSA uses a large C stack workspace. Keep enough stack available on Nano X's
+# 28 KiB SRAM; other targets retain the SDK's default heap size.
+HEAP_SIZE = "nanox: 2048"

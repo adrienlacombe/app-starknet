@@ -31,11 +31,14 @@ The general structure of a request and response is as followed:
 | 0x9000      | Success                 |
 | 0x68xx      | Syscall Error           |
 | 0x6982      | Empty buffer            |
+| 0x6a80      | Malformed data          |
 | 0x6e00      | Bad Cla                 |
 | 0x6e01      | Bad Ins                 |
 | 0x6e02      | Bad P1/P2               |
 | 0x6e03      | Bad Len                 |
-| 0x6e04      | User Cancelled          |
+| 0x6985      | User Cancelled          |
+| 0xb007      | Bad transfer state      |
+| 0xb008      | Signature failure       |
 | 0xe000      | Panic                   |
 
 
@@ -138,6 +141,100 @@ This command will return the signature of a Pedersen or Poseidon hash
 | S        | byte (32) | Signature         | (R,S,V) encoded signature             |
 | V        | byte (1)  | Signature         | (R,S,V) encoded signature             |
 | SW1-SW2  | byte (2)  | Return code       | see list of return codes              |
+
+### ML-DSA-44 signer (experimental)
+
+These commands produce standard Pure ML-DSA-44 keys and signatures with an empty FIPS 204
+context. The incoming Starknet hash is a canonical 32-byte big-endian felt, matching the
+existing app display convention. The signer reverses it and signs the felt's exact 32-byte
+little-endian representation expected by the Cairo verifier. It does not apply the Stark ECDSA
+`poseidon_shift` transformation.
+
+The key is path-specific and recovery-phrase-derived. Its 32-byte key-generation seed is:
+
+```text
+SHA-256("Starknet ML-DSA-44 seed v1" || secp256k1_BIP32_child_secret(path))
+```
+
+The accepted path is the same six-component EIP-2645 path used by the Stark signer. Seeded
+key generation currently calls the C SDK v26.5.0 internal `MLDSA_internal_keygen` symbol
+because `ledger_device_sdk` 1.36.1 exposes only randomized key generation. This unsupported
+interface is pinned for this prototype and must be replaced by a public seeded-keygen API
+before production use.
+
+#### Transfer response
+
+Public keys and signatures exceed the APDU response buffer, so every start/read response uses
+the following frame. Integer fields are big-endian.
+
+| Field | Type | Value |
+|-------|------|-------|
+| VERSION | byte (1) | `0x01` |
+| ALGORITHM | byte (1) | `0x01` (ML-DSA-44) |
+| KIND | byte (1) | `0x01` public key, `0x02` signature |
+| SESSION | byte (4) | transfer session identifier |
+| TOTAL_LEN | byte (2) | `1312` or `2420` |
+| OFFSET | byte (2) | byte offset of this chunk |
+| CHUNK_LEN | byte (1) | at most `240` |
+| CHUNK | byte (CHUNK_LEN) | consecutive raw FIPS 204 bytes |
+
+The first frame has offset zero. Further chunks are read at 240-byte-aligned offsets with the
+same session identifier. Starting any new signing/key operation invalidates the old session.
+
+#### Get ML-DSA-44 public key
+
+| Field | Type | Expected |
+|-------|------|----------|
+| CLA | byte (1) | `0x5A` |
+| INS | byte (1) | `0x09` |
+| P1 | byte (1) | `0x00` silent, `0x01` confirm fingerprint |
+| P2 | byte (1) | `0x00` |
+| L | byte (1) | `0x18` |
+| Path | byte (24) | six big-endian EIP-2645 components |
+
+The device derives the 1,312-byte raw public key and returns its first transfer frame. With
+confirmation enabled, it displays `SHA-256(public_key)` as an uppercase fingerprint.
+
+#### Sign hash with ML-DSA-44
+
+Initialize the signer path:
+
+| Field | Type | Expected |
+|-------|------|----------|
+| CLA | byte (1) | `0x5A` |
+| INS | byte (1) | `0x0A` |
+| P1 | byte (1) | `0x00` |
+| P2 | byte (1) | `0x00` |
+| L | byte (1) | `0x18` |
+| Path | byte (24) | six big-endian EIP-2645 components |
+
+Then review and sign the hash:
+
+| Field | Type | Expected |
+|-------|------|----------|
+| CLA | byte (1) | `0x5A` |
+| INS | byte (1) | `0x0A` |
+| P1 | byte (1) | `0x01` |
+| P2 | byte (1) | `0x00` |
+| L | byte (1) | `0x20` |
+| HASH | byte (32) | canonical big-endian Starknet felt |
+
+Blind signing must be enabled. After approval, the device returns the first frame of the raw
+2,420-byte signature. ML-DSA signing is randomized, so repeated valid signatures may differ.
+
+#### Read ML-DSA transfer
+
+| Field | Type | Expected |
+|-------|------|----------|
+| CLA | byte (1) | `0x5A` |
+| INS | byte (1) | `0x0B` |
+| P1:P2 | byte (2) | 240-byte-aligned transfer offset |
+| L | byte (1) | `0x04` |
+| SESSION | byte (4) | session from the first frame |
+
+The raw public key packs into 43 Cairo felts and the raw signature into 79 by interpreting each
+consecutive 31-byte chunk as a little-endian integer. The last chunks contain 10 and 2 bytes,
+respectively.
 
 
 ### Sign INVOKE Tx v3 (see [Starnet Tx v3](https://docs.starknet.io/architecture-and-concepts/network-architecture/transactions/#v3_hash_calculation))

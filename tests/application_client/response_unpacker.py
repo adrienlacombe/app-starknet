@@ -1,4 +1,4 @@
-from typing import Tuple
+from typing import NamedTuple, Tuple
 from struct import unpack
 from enum import IntEnum
 
@@ -84,8 +84,44 @@ def unpack_sign_hash_response(response: bytes) -> Tuple[bytes, bytes, bytes]:
 
     return r, s, v
 
+
+class MldsaTransferChunk(NamedTuple):
+    version: int
+    algorithm: int
+    kind: int
+    session_id: int
+    total_len: int
+    offset: int
+    data: bytes
+
+
+def unpack_mldsa_transfer_chunk(response: bytes) -> MldsaTransferChunk:
+    assert len(response) >= 12
+    version, algorithm, kind = unpack("BBB", response[:3])
+    session_id = int.from_bytes(response[3:7], "big")
+    total_len = int.from_bytes(response[7:9], "big")
+    offset = int.from_bytes(response[9:11], "big")
+    chunk_len = response[11]
+    chunk = response[12:]
+    assert total_len in (1312, 2420)
+    assert offset < total_len
+    assert chunk_len > 0
+    assert len(chunk) == chunk_len
+    assert offset + chunk_len <= total_len
+    assert chunk_len == min(240, total_len - offset)
+    return MldsaTransferChunk(
+        version,
+        algorithm,
+        kind,
+        session_id,
+        total_len,
+        offset,
+        chunk,
+    )
+
 class Errors(IntEnum):
     SW_DENY                    = 0x6985
+    SW_BAD_DATA                = 0x6A80
     SW_CLA_NOT_SUPPORTED       = 0x6E00
     SW_INS_NOT_SUPPORTED       = 0x6E01
     SW_WRONG_P1P2              = 0x6E02
