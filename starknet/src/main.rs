@@ -5,6 +5,7 @@ mod context;
 mod crypto;
 mod display;
 mod erc20;
+mod mldsa;
 mod settings;
 mod transaction;
 mod types;
@@ -66,6 +67,11 @@ enum Ins {
     SignDeployAccountV1,
     #[cfg(feature = "poseidon")]
     Poseidon,
+    GetMldsa44Pubkey {
+        display: bool,
+    },
+    SignMldsa44Hash,
+    ReadMldsaTransfer,
 }
 
 impl TryFrom<io::ApduHeader> for Ins {
@@ -86,6 +92,13 @@ impl TryFrom<io::ApduHeader> for Ins {
             (6, _, _) => Ok(Ins::SignDeployAccountV1),
             #[cfg(feature = "poseidon")]
             (7, _, _) => Ok(Ins::Poseidon),
+            (9, 0 | 1, 0) => Ok(Ins::GetMldsa44Pubkey {
+                display: header.p1 != 0,
+            }),
+            (9, _, _) => Err(io::StatusWords::BadP1P2),
+            (10, 0 | 1, 0) => Ok(Ins::SignMldsa44Hash),
+            (10, _, _) => Err(io::StatusWords::BadP1P2),
+            (11, _, _) => Ok(Ins::ReadMldsaTransfer),
             (_, _, _) => Err(io::StatusWords::BadIns),
         }
     }
@@ -94,6 +107,12 @@ impl TryFrom<io::ApduHeader> for Ins {
 use ledger_device_sdk::io::Reply;
 
 const SIG_LENGTH: u8 = 0x41;
+const MLDSA_TRANSFER_VERSION: u8 = 1;
+const MLDSA44_ALGORITHM_ID: u8 = 1;
+const MLDSA_TRANSFER_CHUNK_LEN: usize = 240;
+const MLDSA_TRANSFER_HEADER_LEN: usize = 12;
+const SW_BAD_DATA: Reply = Reply(0x6A80);
+const SW_BAD_STATE: Reply = Reply(0xB007);
 
 fn send_data(comm: &mut io::Comm, data: Result<Option<Vec<u8>>, Reply>) {
     match data {
@@ -105,6 +124,32 @@ fn send_data(comm: &mut io::Comm, data: Result<Option<Vec<u8>>, Reply>) {
         }
         Err(sw) => comm.reply(sw),
     }
+}
+
+fn send_mldsa_transfer_chunk(comm: &mut io::Comm, ctx: &Ctx, session_id: u32, offset: usize) {
+    let transfer = &ctx.mldsa_transfer;
+    if transfer.kind == context::MldsaObjectKind::None || transfer.session_id != session_id {
+        send_data(comm, Err(SW_BAD_STATE));
+        return;
+    }
+    if !offset.is_multiple_of(MLDSA_TRANSFER_CHUNK_LEN) || offset >= transfer.len {
+        send_data(comm, Err(io::StatusWords::BadP1P2.into()));
+        return;
+    }
+
+    let chunk_len = core::cmp::min(MLDSA_TRANSFER_CHUNK_LEN, transfer.len - offset);
+    let mut header = [0u8; MLDSA_TRANSFER_HEADER_LEN];
+    header[0] = MLDSA_TRANSFER_VERSION;
+    header[1] = MLDSA44_ALGORITHM_ID;
+    header[2] = transfer.kind as u8;
+    header[3..7].copy_from_slice(&transfer.session_id.to_be_bytes());
+    header[7..9].copy_from_slice(&(transfer.len as u16).to_be_bytes());
+    header[9..11].copy_from_slice(&(offset as u16).to_be_bytes());
+    header[11] = chunk_len as u8;
+
+    comm.append(&header);
+    comm.append(&transfer.data[offset..offset + chunk_len]);
+    comm.reply_ok();
 }
 
 fn handle_apdu(comm: &mut io::Comm, ins: &Ins, ctx: &mut Ctx) {
@@ -166,6 +211,41 @@ fn handle_apdu(comm: &mut io::Comm, ins: &Ins, ctx: &mut Ctx) {
                 }
             }
         }
+        Ins::GetMldsa44Pubkey { display } => {
+            ctx.reset();
+
+            match crypto::set_derivation_path(&mut data, ctx) {
+                Err(error) => {
+                    ctx.reset();
+                    send_data(comm, Err(error.into()));
+                }
+                Ok(()) => {
+                    ctx.req_type = RequestType::GetMldsa44Pubkey;
+                    uxapp::UxEvent::DelayLock.request();
+                    match mldsa::generate_public_key(ctx) {
+                        Err(error) => {
+                            ctx.reset();
+                            send_data(comm, Err(error.into()));
+                        }
+                        Ok(fingerprint) => {
+                            let approved = !display || display::mldsa_pkey_ui(&fingerprint, ctx);
+                            if approved {
+                                ctx.finish_mldsa_request();
+                                send_mldsa_transfer_chunk(
+                                    comm,
+                                    ctx,
+                                    ctx.mldsa_transfer.session_id,
+                                    0,
+                                );
+                            } else {
+                                ctx.reset();
+                                send_data(comm, Err(io::StatusWords::UserCancelled.into()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
         #[cfg(feature = "signhash")]
         Ins::SignHash => match p1 {
             0 => {
@@ -206,6 +286,79 @@ fn handle_apdu(comm: &mut io::Comm, ins: &Ins, ctx: &mut Ctx) {
                 }
             }
         },
+        Ins::SignMldsa44Hash => match p1 {
+            0 => {
+                ctx.reset();
+                match crypto::set_derivation_path(&mut data, ctx) {
+                    Ok(()) => {
+                        ctx.req_type = RequestType::SignMldsa44Hash;
+                        send_data(comm, Ok(None));
+                    }
+                    Err(error) => {
+                        ctx.reset();
+                        send_data(comm, Err(error.into()));
+                    }
+                }
+            }
+            1 => {
+                if ctx.req_type != RequestType::SignMldsa44Hash {
+                    send_data(comm, Err(SW_BAD_STATE));
+                    return;
+                }
+
+                // A sign request is single-use and invalidates any prior output.
+                ctx.req_type = RequestType::Unknown;
+                ctx.mldsa_transfer.clear();
+                if data.len() != 32 {
+                    ctx.finish_mldsa_request();
+                    send_data(comm, Err(io::StatusWords::BadLen.into()));
+                    return;
+                }
+
+                let hash = FieldElement::from(data);
+                if hash >= types::P {
+                    ctx.finish_mldsa_request();
+                    send_data(comm, Err(SW_BAD_DATA));
+                    return;
+                }
+                ctx.hash = hash;
+
+                let settings: Settings = Default::default();
+                if settings.get_element(0) == 0 {
+                    display::blind_signing_enable_ui(ctx);
+                    ctx.finish_mldsa_request();
+                    send_data(comm, Err(io::StatusWords::UserCancelled.into()));
+                } else if display::show_mldsa_hash(ctx) {
+                    uxapp::UxEvent::DelayLock.request();
+                    match mldsa::sign_hash(ctx) {
+                        Ok(()) => {
+                            display::show_status(true, false, ctx);
+                            ctx.finish_mldsa_request();
+                            send_mldsa_transfer_chunk(comm, ctx, ctx.mldsa_transfer.session_id, 0);
+                        }
+                        Err(error) => {
+                            ctx.reset();
+                            display::show_status(false, false, ctx);
+                            send_data(comm, Err(error.into()));
+                        }
+                    }
+                } else {
+                    ctx.reset();
+                    display::show_status(false, false, ctx);
+                    send_data(comm, Err(io::StatusWords::UserCancelled.into()));
+                }
+            }
+            _ => send_data(comm, Err(io::StatusWords::BadP1P2.into())),
+        },
+        Ins::ReadMldsaTransfer => {
+            if data.len() != 4 {
+                send_data(comm, Err(io::StatusWords::BadLen.into()));
+                return;
+            }
+            let session_id = u32::from_be_bytes(data.try_into().unwrap());
+            let offset = u16::from_be_bytes([p1, p2]) as usize;
+            send_mldsa_transfer_chunk(comm, ctx, session_id, offset);
+        }
         Ins::SignTx => match p1 {
             0 => {
                 ctx.reset();

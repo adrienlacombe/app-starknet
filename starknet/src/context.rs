@@ -112,15 +112,53 @@ impl Transaction {
     }
 }
 
+#[derive(PartialEq)]
 pub enum RequestType {
     Unknown,
     GetPubkey,
+    GetMldsa44Pubkey,
     #[cfg(feature = "signhash")]
     SignHash,
+    SignMldsa44Hash,
     SignTx,
     SignTxV1,
     SignDeployAccount,
     SignDeployAccountV1,
+}
+
+pub const MLDSA44_TRANSFER_MAX_LEN: usize = 2420;
+
+#[derive(Copy, Clone, PartialEq)]
+#[repr(u8)]
+pub enum MldsaObjectKind {
+    None = 0,
+    PublicKey = 1,
+    Signature = 2,
+}
+
+pub struct MldsaTransfer {
+    pub data: [u8; MLDSA44_TRANSFER_MAX_LEN],
+    pub len: usize,
+    pub session_id: u32,
+    pub kind: MldsaObjectKind,
+}
+
+impl MldsaTransfer {
+    pub const fn new() -> Self {
+        Self {
+            data: [0u8; MLDSA44_TRANSFER_MAX_LEN],
+            len: 0,
+            session_id: 0,
+            kind: MldsaObjectKind::None,
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.data.fill(0);
+        self.len = 0;
+        self.session_id = 0;
+        self.kind = MldsaObjectKind::None;
+    }
 }
 
 #[derive(Default, Debug)]
@@ -138,6 +176,8 @@ pub struct Ctx {
     pub hash: FieldElement,
     pub signature: Signature,
     pub bip32_path: [u32; 6],
+    pub mldsa_transfer: MldsaTransfer,
+    pub next_mldsa_session_id: u32,
     pub home: NbglHomeAndSettings,
     pub spinner: NbglSpinner,
 }
@@ -150,6 +190,8 @@ impl Ctx {
             hash: FieldElement::default(),
             signature: Signature::default(),
             bip32_path: [0u32; 6],
+            mldsa_transfer: MldsaTransfer::new(),
+            next_mldsa_session_id: 1,
             home: NbglHomeAndSettings::new(),
             spinner: NbglSpinner::new(),
         }
@@ -160,6 +202,21 @@ impl Ctx {
         self.tx = Transaction::default();
         self.hash = FieldElement::default();
         self.signature = Signature::default();
+        self.bip32_path.fill(0);
+        self.mldsa_transfer.clear();
+    }
+
+    pub fn start_mldsa_transfer(&mut self, kind: MldsaObjectKind, len: usize) {
+        self.mldsa_transfer.kind = kind;
+        self.mldsa_transfer.len = len;
+        self.mldsa_transfer.session_id = self.next_mldsa_session_id;
+        self.next_mldsa_session_id = self.next_mldsa_session_id.wrapping_add(1).max(1);
+    }
+
+    /// Consume an ML-DSA request without discarding an approved transfer.
+    pub fn finish_mldsa_request(&mut self) {
+        self.req_type = RequestType::Unknown;
+        self.hash = FieldElement::default();
         self.bip32_path.fill(0);
     }
 }

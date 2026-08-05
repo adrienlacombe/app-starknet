@@ -342,6 +342,63 @@ pub fn pkey_ui(key: &[u8], ctx: &mut Ctx) -> bool {
     }
 }
 
+pub fn mldsa_pkey_ui(fingerprint: &[u8; 32], ctx: &mut Ctx) -> bool {
+    let mut fingerprint_hex = [0u8; 64];
+    hex::encode_to_slice(fingerprint, &mut fingerprint_hex).unwrap();
+    let fingerprint_text = core::str::from_utf8_mut(&mut fingerprint_hex).unwrap();
+    fingerprint_text.make_ascii_uppercase();
+
+    let fields = [
+        Field {
+            name: "Algorithm",
+            value: "ML-DSA-44",
+        },
+        Field {
+            name: "Key fingerprint",
+            value: fingerprint_text,
+        },
+    ];
+    let tvl = TagValueList::new(&fields, 4, false, true);
+    let tvc = TagValueConfirm::new(&tvl, TuneIndex::LookAtMe, "Approve", "");
+
+    let approved = NbglGenericReview::new()
+        .add_content(NbglPageContent::TagValueConfirm(tvc))
+        .show("Reject");
+    let status = NbglStatus::new();
+    status
+        .text(if approved {
+            "ML-DSA Key Confirmed"
+        } else {
+            "ML-DSA Key Rejected"
+        })
+        .show(approved);
+    ctx.home.show_and_return();
+    approved
+}
+
+pub fn show_mldsa_hash(ctx: &mut Ctx) -> bool {
+    let mut hash = ctx.hash.to_hex_string();
+    hash.make_ascii_uppercase();
+    let fields = [Field {
+        name: "Hash",
+        value: hash.as_str(),
+    }];
+
+    #[cfg(any(target_os = "nanosplus", target_os = "nanox"))]
+    const APP_ICON: NbglGlyph = NbglGlyph::from_include(include_gif!("starknet_small.gif", NBGL));
+    #[cfg(any(target_os = "stax", target_os = "flex"))]
+    const APP_ICON: NbglGlyph = NbglGlyph::from_include(include_gif!("starknet_64x64.gif", NBGL));
+    #[cfg(target_os = "apex_p")]
+    const APP_ICON: NbglGlyph = NbglGlyph::from_include(include_gif!("starknet_48x48.png", NBGL));
+
+    NbglReview::new()
+        .glyph(&APP_ICON)
+        .tx_type(TransactionType::Message)
+        .titles("Review ML-DSA-44 hash", "", "Sign with ML-DSA-44?")
+        .blind()
+        .show(&fields)
+}
+
 pub fn main_ui_nbgl(_comm: &mut Comm) -> NbglHomeAndSettings {
     // Load glyph from file with include_gif macro. Creates an NBGL compatible glyph.
     #[cfg(any(target_os = "nanosplus", target_os = "nanox"))]
